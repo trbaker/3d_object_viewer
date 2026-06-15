@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Object Viewer</title>
+<title>3D Object Viewer</title>
 <meta name="description" content="Render a 3D object from a URL, with its rigging and animation. Share a clean object-only link." />
 
 <!-- three.js (ES modules). Works when hosted; degrades gracefully. -->
@@ -259,19 +259,24 @@
   body.embed .hint { display: none !important; }
 
   /* ---------- light background theme ---------- */
-  /* Floating controls stay smoked-glass in both themes; only elements that sit
-     directly on the stage need recoloring for contrast on a light backdrop. */
-  body.light { background: #e7e4dc; }
+  /* Re-point the core tokens so every control (fields, panels, buttons, text)
+     becomes a real light surface instead of dark glass floating on a light bg. */
+  body.light {
+    --bg:       #e7e4dc;
+    --bg-2:     #faf8f2;
+    --panel:    rgba(252,250,245,0.80);
+    --hairline: rgba(40,38,34,0.14);
+    --text:     #2c2a24;
+    --muted:    #6b685f;
+    --muted-2:  #8b8779;
+  }
   body.light #vignette {
     background: radial-gradient(120% 90% at 50% 38%, transparent 46%, rgba(110,106,96,0.20) 100%);
   }
-  body.light .brand { color: #6b685f; }
-  body.light .brand b { color: #2a2823; }
-  body.light .source { color: #8b8779; }
-  body.light .source:hover { color: #2a2823; }
-  body.light .hint .big { color: #6b685f; }
-  body.light .hint .sub { color: #8b8779; }
-  body.light .samples .lab { color: #8b8779; }
+  /* hover/edge accents that were tuned for a dark surface */
+  body.light button:hover { border-color: rgba(40,38,34,0.28); }
+  body.light .field { box-shadow: 0 1px 2px rgba(40,38,34,0.06); }
+  body.light .ring { border-color: rgba(40,38,34,0.14); border-top-color: var(--key); }
 
   @media (max-width: 640px) {
     .brand { display: none; }
@@ -290,7 +295,7 @@
   </div>
 
   <header class="bar" id="bar">
-    <div class="brand"><span class="dot"></span><b>OBJECT</b>&nbsp;VIEWER</div>
+    <div class="brand"><span class="dot"></span><b>3D&nbsp;OBJECT</b>&nbsp;VIEWER</div>
     <label class="field">
       <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
              placeholder="https://…/model.glb" />
@@ -344,6 +349,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const CDN = 'https://cdn.jsdelivr.net/npm/three@0.169.0';      // code + decoders (shipped in npm)
 const ASSETS = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r169'; // sample models (npm omits these)
+const SOURCE_BASE = document.getElementById('sourceLink').getAttribute('href'); // the full viewer URL
 
 /* ---------------- scene ---------------- */
 const stage = document.getElementById('stage');
@@ -409,7 +415,7 @@ let actions = [];            // AnimationAction[]
 let activeAction = null;
 let playing = true;
 let turntable = false;
-let theme = 'dark';          // 'dark' | 'light' — encoded in the share link
+let theme = 'light';         // 'light' | 'dark' — non-default ('dark') is encoded in the share link
 const clock = new THREE.Clock();
 
 /* ---------------- loaders ---------------- */
@@ -621,6 +627,14 @@ async function load(url) {
     document.getElementById('spin').classList.add('show');
     document.body.classList.add('has-tools');
     lastUrl = url;
+
+    // In the object-only embed view, "source" opens the full viewer with this model loaded.
+    if (document.body.classList.contains('embed')) {
+      const su = new URL(SOURCE_BASE, location.href);
+      su.searchParams.set('model', lastUrl);
+      if (theme === 'dark') su.searchParams.set('bg', 'dark');  // match the embed's background
+      document.getElementById('sourceLink').href = su.toString();
+    }
   } catch (e) {
     console.error('Model load failed:', url, e);
     const ext = extensionOf(url);
@@ -648,7 +662,7 @@ function shareUrl() {
   const u = new URL(base);
   u.searchParams.set('model', lastUrl);
   u.searchParams.set('view', 'object');   // object-only clean view
-  if (theme === 'light') u.searchParams.set('bg', 'light');
+  if (theme === 'dark') u.searchParams.set('bg', 'dark');   // light is the default, kept out of the URL
   return u.toString();
 }
 
@@ -716,7 +730,6 @@ document.getElementById('bg').addEventListener('click', () =>
 
 // sample chips (animated rigs + a static PBR object, all CORS-friendly)
 const SAMPLES = [
-  ['Soldier (rigged)',  `${ASSETS}/examples/models/gltf/Soldier.glb`],
   ['Robot (animated)',  `${ASSETS}/examples/models/gltf/RobotExpressive/RobotExpressive.glb`],
   ['Tokyo (draco)',     `${ASSETS}/examples/models/gltf/LittlestTokyo.glb`],
   ['Flamingo',          `${ASSETS}/examples/models/gltf/Flamingo.glb`],
@@ -754,7 +767,7 @@ const modelParam = params.get('model');
 if (params.get('view') === 'object' || params.get('embed') === '1') {
   document.body.classList.add('embed');
 }
-applyTheme(params.get('bg') === 'light' ? 'light' : 'dark');
+applyTheme(params.get('bg') === 'dark' ? 'dark' : 'light');
 if (modelParam) load(modelParam);
 </script>
 </body>

@@ -318,7 +318,8 @@ import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-const CDN = 'https://cdn.jsdelivr.net/npm/three@0.169.0';
+const CDN = 'https://cdn.jsdelivr.net/npm/three@0.169.0';      // code + decoders (shipped in npm)
+const ASSETS = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r169'; // sample models (npm omits these)
 
 /* ---------------- scene ---------------- */
 const stage = document.getElementById('stage');
@@ -588,10 +589,17 @@ async function load(url) {
     document.body.classList.add('has-tools');
     lastUrl = url;
   } catch (e) {
-    console.error(e);
-    const msg = /fetch|network|load|CORS|Cross/i.test(String(e?.message))
-      ? "Couldn't load that file. Check the URL and that the host allows cross-origin access (GitHub raw, jsDelivr, and Pages do)."
-      : (e?.message || 'Failed to load model.');
+    console.error('Model load failed:', url, e);
+    const ext = extensionOf(url);
+    const known = ['glb','gltf','fbx','obj','stl','ply','dae'].includes(ext);
+    let msg;
+    if (!known) {
+      msg = `Unsupported file type "${ext || '?'}". Use .glb .gltf .fbx .obj .stl .ply or .dae`;
+    } else {
+      // Browser CORS failures usually arrive as opaque/empty errors, so spell out both causes.
+      msg = "Couldn't load that file. Two common causes: the URL is wrong/missing, or the host isn't sending CORS headers. " +
+            "S3 buckets need a CORS rule allowing GET from your site (public-read alone isn't enough). GitHub Pages, raw.githubusercontent, and jsDelivr work out of the box.";
+    }
     toast(msg, true);
     document.getElementById('readout').classList.remove('show');
   } finally {
@@ -661,11 +669,11 @@ document.getElementById('spin').addEventListener('click', () => {
 
 // sample chips (animated rigs + a static PBR object, all CORS-friendly)
 const SAMPLES = [
-  ['Soldier (rigged)',  `${CDN}/examples/models/gltf/Soldier.glb`],
-  ['Robot (animated)',  `${CDN}/examples/models/gltf/RobotExpressive/RobotExpressive.glb`],
-  ['Tokyo (draco)',     `${CDN}/examples/models/gltf/LittlestTokyo.glb`],
-  ['Flamingo',          `${CDN}/examples/models/gltf/Flamingo.glb`],
-  ['Helmet (static)',   `${CDN}/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf`],
+  ['Soldier (rigged)',  `${ASSETS}/examples/models/gltf/Soldier.glb`],
+  ['Robot (animated)',  `${ASSETS}/examples/models/gltf/RobotExpressive/RobotExpressive.glb`],
+  ['Tokyo (draco)',     `${ASSETS}/examples/models/gltf/LittlestTokyo.glb`],
+  ['Flamingo',          `${ASSETS}/examples/models/gltf/Flamingo.glb`],
+  ['Helmet (static)',   `${ASSETS}/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf`],
 ];
 const samplesEl = document.getElementById('samples');
 SAMPLES.forEach(([name, url]) => {

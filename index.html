@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Object Viewer</title>
+<meta name="description" content="Render a 3D object from a URL, with its rigging and animation. Share a clean object-only link." />
+
+<!-- three.js (ES modules). Works when hosted; degrades gracefully. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+
+<style>
+  :root {
+    --bg:        #16161a;
+    --bg-2:      #1d1d22;
+    --panel:     rgba(28,28,33,0.72);
+    --hairline:  rgba(255,255,255,0.10);
+    --text:      #e9e7e0;
+    --muted:     #8c8c84;
+    --muted-2:   #6a6a63;
+    --key:       #f0a830;   /* tungsten key light */
+    --key-dim:   rgba(240,168,48,0.16);
+    --bad:       #e0734f;
+    --r:         12px;
+    --mono: ui-monospace, "JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, monospace;
+    --sans: "Space Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; touch-action: none; }
+
+  /* radial vignette over the gl canvas for studio depth */
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 90% at 50% 38%, transparent 40%, rgba(0,0,0,0.55) 100%);
+  }
+
+  /* ---------- top command bar ---------- */
+  .bar {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; gap: 10px; align-items: center;
+    padding: 14px 16px;
+    z-index: 20;
+  }
+  .brand {
+    display: flex; align-items: baseline; gap: 9px;
+    font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--muted); user-select: none; white-space: nowrap;
+    padding-right: 4px;
+  }
+  .brand b { color: var(--text); font-weight: 600; letter-spacing: 0.14em; }
+  .brand .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--key); box-shadow: 0 0 12px var(--key);
+    transform: translateY(-1px);
+  }
+
+  .field {
+    flex: 1 1 auto;
+    display: flex; align-items: center;
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r);
+    backdrop-filter: blur(14px) saturate(1.1);
+    -webkit-backdrop-filter: blur(14px) saturate(1.1);
+    transition: border-color .18s ease, box-shadow .18s ease;
+    min-width: 0;
+  }
+  .field:focus-within {
+    border-color: rgba(240,168,48,0.55);
+    box-shadow: 0 0 0 3px var(--key-dim);
+  }
+  .field input {
+    flex: 1 1 auto; min-width: 0;
+    background: none; border: none; outline: none;
+    color: var(--text); font-family: var(--mono); font-size: 13px;
+    padding: 12px 6px 12px 14px;
+  }
+  .field input::placeholder { color: var(--muted-2); }
+
+  button {
+    font-family: var(--sans); cursor: pointer;
+    border-radius: 9px; border: 1px solid var(--hairline);
+    background: var(--bg-2); color: var(--text);
+    font-size: 13px; letter-spacing: 0.02em;
+    padding: 11px 16px; white-space: nowrap;
+    transition: background .15s ease, border-color .15s ease, opacity .15s ease, transform .05s ease;
+  }
+  button:hover { border-color: rgba(255,255,255,0.22); }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-load {
+    margin: 5px; align-self: stretch;
+    background: var(--key); color: #1a1206; border-color: transparent;
+    font-weight: 600;
+  }
+  .btn-load:hover { background: #ffb840; border-color: transparent; }
+
+  .btn-share { background: transparent; }
+  .btn-share:not(:disabled):hover { border-color: rgba(240,168,48,0.5); color: var(--key); }
+
+  /* ---------- sample chips ---------- */
+  .samples {
+    position: fixed; top: 62px; left: 16px; right: 16px;
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    z-index: 19;
+  }
+  .samples .lab {
+    font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--muted-2); margin-right: 2px;
+  }
+  .chip {
+    font-family: var(--mono); font-size: 11.5px;
+    color: var(--muted); background: var(--panel);
+    border: 1px solid var(--hairline); border-radius: 999px;
+    padding: 6px 12px; cursor: pointer;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: color .15s, border-color .15s;
+  }
+  .chip:hover { color: var(--text); border-color: rgba(240,168,48,0.45); }
+
+  /* ---------- instrument readout (bottom-left) ---------- */
+  .readout {
+    position: fixed; left: 16px; bottom: 16px; z-index: 18;
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--hairline);
+    border-radius: var(--r); padding: 12px 14px;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    min-width: 184px; max-width: 60vw;
+    opacity: 0; transform: translateY(6px); pointer-events: none;
+    transition: opacity .25s ease, transform .25s ease;
+  }
+  .readout.show { opacity: 1; transform: none; pointer-events: auto; }
+  .readout .row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
+  .readout .k { color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px; }
+  .readout .v { color: var(--text); }
+
+  /* animation transport */
+  .transport {
+    display: none; align-items: center; gap: 8px;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--hairline);
+  }
+  .transport.show { display: flex; }
+  .transport select {
+    flex: 1 1 auto; min-width: 0;
+    font-family: var(--mono); font-size: 11px;
+    background: var(--bg-2); color: var(--text);
+    border: 1px solid var(--hairline); border-radius: 7px; padding: 5px 7px; outline: none;
+  }
+  .iconbtn {
+    width: 30px; height: 28px; padding: 0;
+    display: grid; place-items: center; border-radius: 7px;
+    background: var(--bg-2);
+  }
+  .iconbtn svg { width: 13px; height: 13px; fill: var(--text); }
+
+  /* turntable toggle, top-right corner under bar */
+  .tools {
+    position: fixed; right: 16px; bottom: 16px; z-index: 18;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .ghost {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--hairline);
+    border-radius: 999px; padding: 7px 13px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    display: none;
+  }
+  .ghost.show { display: inline-flex; align-items: center; gap: 7px; }
+  .ghost.on { color: var(--key); border-color: rgba(240,168,48,0.5); }
+  .ghost .led { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); }
+  .ghost.on .led { background: var(--key); box-shadow: 0 0 8px var(--key); }
+
+  /* ---------- source link (lower right) ---------- */
+  /* >>> Replace the href on #sourceLink once your GitHub sample is live. <<< */
+  .source {
+    position: fixed; right: 16px; bottom: 16px; z-index: 30;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+    color: var(--muted-2); text-decoration: none;
+    padding: 6px 4px;
+    transition: color .15s ease;
+  }
+  .source:hover { color: var(--text); }
+  /* when tools are present, nudge source up so they don't overlap */
+  body.has-tools .source { bottom: 54px; }
+
+  /* ---------- loading + status ---------- */
+  #loader {
+    position: fixed; inset: 0; z-index: 25; display: none;
+    place-items: center; pointer-events: none;
+  }
+  #loader.show { display: grid; }
+  .ring {
+    width: 46px; height: 46px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.12);
+    border-top-color: var(--key);
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pct {
+    margin-top: 14px; font-family: var(--mono); font-size: 12px;
+    color: var(--muted); letter-spacing: 0.1em;
+  }
+
+  .toast {
+    position: fixed; top: 16px; left: 50%; transform: translate(-50%, -16px);
+    z-index: 40; background: var(--bg-2); color: var(--text);
+    border: 1px solid rgba(240,168,48,0.5); border-radius: 10px;
+    padding: 10px 16px; font-size: 13px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s ease, transform .2s ease;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast.bad { border-color: rgba(224,115,79,0.6); }
+
+  /* ---------- empty / hint state ---------- */
+  .hint {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    text-align: center; color: var(--muted-2); z-index: 5;
+    pointer-events: none; user-select: none;
+    transition: opacity .4s ease;
+  }
+  .hint .big { font-size: 15px; color: var(--muted); letter-spacing: 0.02em; }
+  .hint .sub { margin-top: 8px; font-family: var(--mono); font-size: 11.5px; }
+  .hint.gone { opacity: 0; }
+
+  /* ---------- embed / object-only mode ---------- */
+  body.embed .bar,
+  body.embed .samples,
+  body.embed .readout,
+  body.embed .tools,
+  body.embed .hint { display: none !important; }
+
+  @media (max-width: 640px) {
+    .brand { display: none; }
+    .samples .lab { display: none; }
+    .readout { font-size: 10.5px; min-width: 150px; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="vignette"></div>
+
+  <div class="hint" id="hint">
+    <div class="big">No object loaded</div>
+    <div class="sub">paste a model URL above · .glb .gltf .fbx .obj .stl .ply .dae</div>
+  </div>
+
+  <header class="bar" id="bar">
+    <div class="brand"><span class="dot"></span><b>OBJECT</b>&nbsp;VIEWER</div>
+    <label class="field">
+      <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+             placeholder="https://…/model.glb" />
+      <button class="btn-load" id="load">Load</button>
+    </label>
+    <button class="btn-share" id="share" disabled>Share view</button>
+  </header>
+
+  <div class="samples" id="samples">
+    <span class="lab">Try</span>
+  </div>
+
+  <section class="readout" id="readout">
+    <div class="row"><span class="k">format</span><span class="v" id="r-fmt">—</span></div>
+    <div class="row"><span class="k">triangles</span><span class="v" id="r-tri">—</span></div>
+    <div class="row"><span class="k">meshes</span><span class="v" id="r-mesh">—</span></div>
+    <div class="row"><span class="k">rig</span><span class="v" id="r-rig">—</span></div>
+    <div class="row"><span class="k">clips</span><span class="v" id="r-clip">—</span></div>
+    <div class="transport" id="transport">
+      <button class="iconbtn" id="playpause" title="Play / pause">
+        <svg id="pp-icon" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+      </button>
+      <select id="clipsel" title="Animation clip"></select>
+    </div>
+  </section>
+
+  <div class="tools">
+    <button class="ghost" id="spin"><span class="led"></span>Turntable</button>
+  </div>
+
+  <!-- SOURCE LINK — replace href with your GitHub link once the sample is posted -->
+  <a class="source" id="sourceLink" href="#" target="_blank" rel="noopener">source</a>
+
+  <div id="loader"><div><div class="ring"></div><div class="pct" id="pct"></div></div></div>
+  <div class="toast" id="toast"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const CDN = 'https://cdn.jsdelivr.net/npm/three@0.169.0';
+
+/* ---------------- scene ---------------- */
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 5000);
+camera.position.set(3, 2, 5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+// studio key light (the amber accent, made physical)
+const key = new THREE.DirectionalLight(0xfff0d8, 2.2);
+key.position.set(4, 8, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.bias = -0.0005;
+scene.add(key);
+const fill = new THREE.DirectionalLight(0xbfd0ff, 0.5);
+fill.position.set(-6, 3, -4);
+scene.add(fill);
+
+// turntable floor: soft radial shadow-catcher + faint grid
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(60, 64),
+  new THREE.ShadowMaterial({ opacity: 0.28 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const grid = new THREE.PolarGridHelper(60, 16, 8, 64, 0x2a2a30, 0x2a2a30);
+grid.material.transparent = true;
+grid.material.opacity = 0.5;
+scene.add(grid);
+
+/* ---------------- state ---------------- */
+let current = null;          // loaded root object3D
+let mixer = null;            // THREE.AnimationMixer
+let clips = [];              // AnimationClip[]
+let actions = [];            // AnimationAction[]
+let activeAction = null;
+let playing = true;
+let turntable = false;
+const clock = new THREE.Clock();
+
+/* ---------------- loaders ---------------- */
+const draco = new DRACOLoader().setDecoderPath(`${CDN}/examples/jsm/libs/draco/`);
+const ktx2  = new KTX2Loader().setTranscoderPath(`${CDN}/examples/jsm/libs/basis/`).detectSupport(renderer);
+
+function gltfLoader(mgr) {
+  return new GLTFLoader(mgr).setDRACOLoader(draco).setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
+}
+
+function extensionOf(url) {
+  const clean = url.split('?')[0].split('#')[0];
+  const m = clean.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : '';
+}
+
+/* Resolve loader + extract scene/animations uniformly across formats. */
+function loadModel(url, onProgress) {
+  const ext = extensionOf(url);
+  const mgr = new THREE.LoadingManager();
+  mgr.onProgress = () => {};
+
+  return new Promise((resolve, reject) => {
+    const ok  = (object, animations, label) => resolve({ object, animations: animations || [], label });
+    const err = (e) => reject(e);
+
+    switch (ext) {
+      case 'glb':
+      case 'gltf':
+        gltfLoader(mgr).load(url, g => ok(g.scene, g.animations, ext.toUpperCase()), onProgress, err);
+        break;
+      case 'fbx':
+        new FBXLoader(mgr).load(url, o => ok(o, o.animations, 'FBX'), onProgress, err);
+        break;
+      case 'obj':
+        new OBJLoader(mgr).load(url, o => ok(o, [], 'OBJ'), onProgress, err);
+        break;
+      case 'stl':
+        new STLLoader(mgr).load(url, geo => ok(meshFromGeometry(geo), [], 'STL'), onProgress, err);
+        break;
+      case 'ply':
+        new PLYLoader(mgr).load(url, geo => { geo.computeVertexNormals(); ok(meshFromGeometry(geo, true), [], 'PLY'); }, onProgress, err);
+        break;
+      case 'dae':
+        new ColladaLoader(mgr).load(url, c => ok(c.scene, c.scene.animations || [], 'COLLADA'), onProgress, err);
+        break;
+      default:
+        reject(new Error(`Unsupported or missing file extension "${ext || '?'}". Use .glb .gltf .fbx .obj .stl .ply or .dae`));
+    }
+  });
+}
+
+function meshFromGeometry(geo, vertexColors = false) {
+  const mat = new THREE.MeshStandardMaterial({
+    color: vertexColors ? 0xffffff : 0xb8b5ac,
+    vertexColors: vertexColors && !!geo.getAttribute('color'),
+    roughness: 0.65, metalness: 0.05, flatShading: false,
+  });
+  return new THREE.Mesh(geo, mat);
+}
+
+/* ---------------- framing + shadows ---------------- */
+function frame(object) {
+  object.traverse(n => {
+    if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; }
+  });
+
+  const box = new THREE.Box3().setFromObject(object);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+
+  // drop onto the floor, centered on the turntable
+  object.position.x += -center.x;
+  object.position.z += -center.z;
+  object.position.y += -box.min.y;
+
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const fov = camera.fov * Math.PI / 180;
+  let dist = (maxDim / 2) / Math.tan(fov / 2);
+  dist *= 1.6;
+
+  camera.near = maxDim / 200;
+  camera.far  = maxDim * 200;
+  camera.updateProjectionMatrix();
+
+  const target = new THREE.Vector3(0, size.y * 0.5, 0);
+  camera.position.set(dist * 0.55, size.y * 0.5 + dist * 0.45, dist * 0.95);
+  controls.target.copy(target);
+  controls.minDistance = maxDim * 0.2;
+  controls.maxDistance = maxDim * 12;
+  controls.update();
+
+  // scale shadow/grid to the object
+  const r = maxDim * 1.2;
+  grid.scale.setScalar(r / 60);
+  key.shadow.camera.left = -r; key.shadow.camera.right = r;
+  key.shadow.camera.top = r; key.shadow.camera.bottom = -r;
+  key.shadow.camera.far = r * 8;
+  key.shadow.camera.updateProjectionMatrix();
+}
+
+/* ---------------- animation wiring ---------------- */
+function setupAnimation(object, animations) {
+  mixer = null; clips = []; actions = []; activeAction = null;
+  const sel = document.getElementById('clipsel');
+  sel.innerHTML = '';
+
+  if (!animations.length) {
+    document.getElementById('transport').classList.remove('show');
+    document.getElementById('r-clip').textContent = 'none';
+    return;
+  }
+
+  mixer = new THREE.AnimationMixer(object);
+  clips = animations;
+  clips.forEach((clip, i) => {
+    actions.push(mixer.clipAction(clip));
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = clip.name || `clip ${i + 1}`;
+    sel.appendChild(opt);
+  });
+
+  // pick a sensible default: skip rest/T-pose clips if there's a real one
+  let start = clips.findIndex(c => !/t[\s-]?pose|rest|bind/i.test(c.name || ''));
+  if (start < 0) start = 0;
+  sel.value = start;
+  playClip(start);
+
+  document.getElementById('transport').classList.add('show');
+  document.getElementById('r-clip').textContent = String(clips.length);
+}
+
+function playClip(i) {
+  if (activeAction) activeAction.fadeOut(0.25);
+  activeAction = actions[i];
+  activeAction.reset().setEffectiveWeight(1).fadeIn(0.25).play();
+  playing = true;
+  setPlayIcon();
+}
+
+function setPlayIcon() {
+  const svg = document.getElementById('pp-icon');
+  svg.innerHTML = playing
+    ? '<rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/>'  // pause
+    : '<path d="M7 5l12 7-12 7z"/>';                                                          // play
+}
+
+/* ---------------- counts ---------------- */
+function inspect(object, label, animations) {
+  let tris = 0, meshes = 0, bones = 0, skinned = false;
+  object.traverse(n => {
+    if (n.isMesh && n.geometry) {
+      meshes++;
+      const g = n.geometry;
+      const idx = g.getIndex();
+      tris += idx ? idx.count / 3 : (g.getAttribute('position')?.count || 0) / 3;
+    }
+    if (n.isBone) bones++;
+    if (n.isSkinnedMesh) skinned = true;
+  });
+  document.getElementById('r-fmt').textContent = label;
+  document.getElementById('r-tri').textContent = Math.round(tris).toLocaleString();
+  document.getElementById('r-mesh').textContent = String(meshes);
+  document.getElementById('r-rig').textContent = skinned ? `${bones} bones` : (bones ? `${bones} bones` : 'static');
+  document.getElementById('readout').classList.add('show');
+}
+
+/* ---------------- orchestration ---------------- */
+function clearCurrent() {
+  if (mixer) mixer.stopAllAction();
+  if (current) {
+    scene.remove(current);
+    current.traverse(n => {
+      if (n.geometry) n.geometry.dispose();
+      if (n.material) {
+        const mats = Array.isArray(n.material) ? n.material : [n.material];
+        mats.forEach(m => {
+          for (const k in m) { const v = m[k]; if (v && v.isTexture) v.dispose(); }
+          m.dispose();
+        });
+      }
+    });
+  }
+  current = null; mixer = null; clips = []; actions = []; activeAction = null;
+}
+
+async function load(url) {
+  url = (url || '').trim();
+  if (!url) return;
+  document.getElementById('url').value = url;
+  showLoader(true, 0);
+  toast('', false, true); // hide any toast
+
+  try {
+    const { object, animations, label } = await loadModel(url, e => {
+      if (e.lengthComputable) showLoader(true, e.loaded / e.total);
+    });
+    clearCurrent();
+    current = object;
+    scene.add(object);
+    frame(object);
+    inspect(object, label, animations);
+    setupAnimation(object, animations);
+
+    document.getElementById('hint').classList.add('gone');
+    document.getElementById('share').disabled = false;
+    document.getElementById('spin').classList.add('show');
+    document.body.classList.add('has-tools');
+    lastUrl = url;
+  } catch (e) {
+    console.error(e);
+    const msg = /fetch|network|load|CORS|Cross/i.test(String(e?.message))
+      ? "Couldn't load that file. Check the URL and that the host allows cross-origin access (GitHub raw, jsDelivr, and Pages do)."
+      : (e?.message || 'Failed to load model.');
+    toast(msg, true);
+    document.getElementById('readout').classList.remove('show');
+  } finally {
+    showLoader(false);
+  }
+}
+
+let lastUrl = '';
+
+/* ---------------- share / url state ---------------- */
+function shareUrl() {
+  const base = location.origin + location.pathname;
+  const u = new URL(base);
+  u.searchParams.set('model', lastUrl);
+  u.searchParams.set('view', 'object');   // object-only clean view
+  return u.toString();
+}
+
+async function doShare() {
+  if (!lastUrl) return;
+  const url = shareUrl();
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Object-only link copied to clipboard');
+  } catch {
+    toast(url, false);
+  }
+  if (navigator.share) {
+    navigator.share({ url, title: 'Object Viewer' }).catch(() => {});
+  }
+}
+
+/* ---------------- UI plumbing ---------------- */
+function showLoader(on, frac) {
+  const l = document.getElementById('loader');
+  l.classList.toggle('show', on);
+  document.getElementById('pct').textContent =
+    (on && frac != null && frac > 0) ? Math.round(frac * 100) + '%' : '';
+}
+
+let toastTimer = null;
+function toast(msg, bad = false, hideNow = false) {
+  const t = document.getElementById('toast');
+  if (hideNow) { t.classList.remove('show'); return; }
+  t.textContent = msg;
+  t.classList.toggle('bad', bad);
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), bad ? 6000 : 2600);
+}
+
+document.getElementById('load').addEventListener('click', () => load(document.getElementById('url').value));
+document.getElementById('url').addEventListener('keydown', e => { if (e.key === 'Enter') load(e.target.value); });
+document.getElementById('share').addEventListener('click', doShare);
+
+document.getElementById('playpause').addEventListener('click', () => {
+  if (!mixer) return;
+  playing = !playing;
+  mixer.timeScale = playing ? 1 : 0;
+  setPlayIcon();
+});
+document.getElementById('clipsel').addEventListener('change', e => playClip(+e.target.value));
+document.getElementById('spin').addEventListener('click', () => {
+  turntable = !turntable;
+  document.getElementById('spin').classList.toggle('on', turntable);
+});
+
+// sample chips (animated rigs + a static PBR object, all CORS-friendly)
+const SAMPLES = [
+  ['Soldier (rigged)',  `${CDN}/examples/models/gltf/Soldier.glb`],
+  ['Robot (animated)',  `${CDN}/examples/models/gltf/RobotExpressive/RobotExpressive.glb`],
+  ['Tokyo (draco)',     `${CDN}/examples/models/gltf/LittlestTokyo.glb`],
+  ['Flamingo',          `${CDN}/examples/models/gltf/Flamingo.glb`],
+  ['Helmet (static)',   `${CDN}/examples/models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf`],
+];
+const samplesEl = document.getElementById('samples');
+SAMPLES.forEach(([name, url]) => {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.textContent = name;
+  b.addEventListener('click', () => load(url));
+  samplesEl.appendChild(b);
+});
+
+/* ---------------- render loop ---------------- */
+function tick() {
+  requestAnimationFrame(tick);
+  const dt = clock.getDelta();
+  if (mixer && playing) mixer.update(dt);
+  if (turntable && current) current.rotation.y += dt * 0.5;
+  controls.update();
+  renderer.render(scene, camera);
+}
+tick();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ---------------- boot from URL ---------------- */
+const params = new URLSearchParams(location.search);
+const modelParam = params.get('model');
+if (params.get('view') === 'object' || params.get('embed') === '1') {
+  document.body.classList.add('embed');
+}
+if (modelParam) load(modelParam);
+</script>
+</body>
+</html>
